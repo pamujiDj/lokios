@@ -1,0 +1,72 @@
+name: Build ILOK iOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths: [ 'ios/**', '.github/workflows/ios.yml', '*.zip' ]
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Ambil kode
+        uses: actions/checkout@v4
+
+      # Mencari folder iOS (yang punya project.yml). Jika tidak ada tetapi ada file .zip, zip diekstrak otomatis.
+      - name: Cari folder proyek iOS
+        id: find
+        run: |
+          find_proj() {
+            for s in $(find . -maxdepth 5 -name project.yml -not -path './.git/*'); do
+              d=$(dirname "$s")
+              if [ -d "$d/Sources" ]; then echo "$d"; return; fi
+            done
+          }
+          DIR=$(find_proj)
+          if [ -z "$DIR" ]; then
+            ZIP=$(find . -maxdepth 2 -iname '*.zip' -not -path './.git/*' | head -n 1)
+            if [ -n "$ZIP" ]; then
+              echo "Mengekstrak $ZIP ..."
+              unzip -q -o "$ZIP" -d _src
+              DIR=$(find_proj)
+            fi
+          fi
+          if [ -z "$DIR" ]; then
+            echo "::error::Folder ios (project.yml + Sources) tidak ditemukan. Upload folder 'ios' atau ILOK.zip."
+            find . -not -path './.git/*' | head -80
+            exit 1
+          fi
+          echo "Folder proyek: $DIR"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Pasang XcodeGen
+        run: brew install xcodegen
+
+      - name: Buat project Xcode
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: xcodegen generate
+
+      - name: Build aplikasi (tanpa tanda tangan)
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: |
+          xcodebuild -project ILOK.xcodeproj -scheme ILOK \
+            -sdk iphoneos -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Kemas menjadi IPA (belum ditandatangani)
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: |
+          rm -rf Payload ILOK-unsigned.ipa
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/ILOK.app Payload/
+          zip -qry ILOK-unsigned.ipa Payload
+
+      - name: Unggah IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ILOK-iOS-unsigned
+          path: ${{ steps.find.outputs.dir }}/ILOK-unsigned.ipa
